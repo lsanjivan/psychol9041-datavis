@@ -1,0 +1,415 @@
+---
+title: "Researching objects from an action perspective"
+author: "Sanjivan Loganathan"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(ggplot2)
+library(plotly)   
+library(ggrepel)   
+
+likert_qs <- c("Often", "Interact", "Precise", "Think", "Action", "Feeling")
+
+item_text <- c(
+  Often    = "How often do you see this object?",
+  Interact = "How frequently would you use your hands to interact with this object or others like it?",
+  Precise  = "Using this object requires precise and careful hand movements",
+  Think    = "When I see this object, I automatically think about how I would interact with it",
+  Action   = "There is a specific action associated with this object to accomplish a goal",
+  Feeling  = "This object has a unique feeling (e.g. texture, weight, squishiness) that affects how it is used"
+)
+
+plain_labels <- c(Often    = "Seen often",
+                  Interact = "Handled often",
+                  Precise  = "Needs precision",
+                  Think    = "Brings use to mind",
+                  Action   = "Has a specific use",
+                  Feeling  = "Distinctive feel")
+```
+
+```{r}
+#| label: data
+raw <- read_csv("data.csv",
+                col_types = cols(.default = col_character()),
+                name_repair = "unique_quiet") |>
+  rename(Crayons_Interact = Crayons_Interact...364,
+         Crayons_Think    = Crayons_Interact...366,
+         Tongs_Action     = Tongs_Action...394,
+         Tongs_Open       = Tongs_Action...396)
+
+raw <- raw |>
+  filter(row_number() > 2)
+
+long_data <- raw |>
+  select(subnr = SUBNR,
+         ends_with(c("_Know", "_Often", "_Interact", "_Precise",
+                     "_Think", "_Action", "_Feeling"))) |>
+  pivot_longer(-subnr,
+               names_to = c("object", "question"),
+               names_sep = "_",
+               values_to = "value") |>
+  mutate(value = as.numeric(value))
+
+recode_qs <- c("Precise", "Think", "Action", "Feeling")
+long_data <- long_data |>
+  mutate(value = if_else(question %in% recode_qs,
+                         case_match(value, 1 ~ 1, 8 ~ 2, 2 ~ 3, 3 ~ 4, 4 ~ 5, 5 ~ 6, 6 ~ 7),
+                         value))
+
+not_known <- long_data |>
+  filter(question == "Know", value == 2) |>
+  select(subnr, object)
+
+long_data <- long_data |>
+  anti_join(not_known, by = c("subnr", "object")) |>
+  filter(question != "Know")
+
+long_data <- long_data |>
+  group_by(subnr, question) |>
+  mutate(z = (value - mean(value, na.rm = TRUE)) / sd(value, na.rm = TRUE)) |>
+  ungroup()
+
+# store questions as a factor so plots keep the survey order
+ratings <- long_data |>
+  filter(!str_starts(object, "Attn"), !is.na(z)) |>
+  mutate(question = factor(question, levels = likert_qs))
+```
+
+```{r}
+#| label: analysis
+
+z_scores  <- ratings |> select(subnr, object, question, z)
+pair_data <- inner_join(z_scores, z_scores,
+                        by = c("subnr", "object"),
+                        suffix = c("_x", "_y"),
+                        relationship = "many-to-many")
+
+r_values <- pair_data |>
+  summarise(r = cor(z_x, z_y), .by = c(question_x, question_y))
+
+obj_means <- ratings |>
+  summarise(mean_z = mean(z), .by = c(object, question)) |>
+  pivot_wider(names_from = question, values_from = mean_z) |>
+  drop_na()
+
+pca <- obj_means |>
+  select(all_of(likert_qs)) |>
+  prcomp(scale. = TRUE)
+
+var_expl <- pca$sdev^2 / sum(pca$sdev^2)
+
+rot    <- pca$rotation   
+scores <- pca$x          
+
+#flip sign so biggest loading is positive
+for (i in 1:3) {
+  biggest <- rot[which.max(abs(rot[, i])), i]
+  if (biggest < 0) {
+    rot[, i]    <- -rot[, i]
+    scores[, i] <- -scores[, i]
+  }
+}
+
+pc_labels <- paste0("PC", 1:3, " (", round(var_expl[1:3] * 100), "%)")
+
+scores_df <- tibble(object = obj_means$object,
+                    PC1 = scores[, 1], PC2 = scores[, 2], PC3 = scores[, 3])
+
+
+scores_df <- scores_df |>
+  mutate(object = case_match(object,
+           "AngelFig"    ~ "Angel figurine",   "bakingcups"  ~ "Baking cups",
+           "beautyblndr" ~ "Beauty blender",   "birdie"      ~ "Badminton birdie",
+           "BoardEraser" ~ "Board eraser",     "cards"       ~ "Playing cards",
+           "coffeefiltr" ~ "Coffee filter",    "elasticband" ~ "Elastic band",
+           "FlowerPot"   ~ "Flower pot",       "gluestick"   ~ "Glue stick",
+           "GolfBall"    ~ "Golf ball",        "HairClip"    ~ "Hair clip",
+           "icetray"     ~ "Ice tray",         "jumprope"    ~ "Jump rope",
+           "Laces"       ~ "Shoelaces",        "LipBalm"     ~ "Lip balm",
+           "MagnifGlass" ~ "Magnifying glass", "MeasSpoon"   ~ "Measuring spoon",
+           "MeasTape"    ~ "Measuring tape",   "MsringCups"  ~ "Measuring cups",
+           "nailpolish"  ~ "Nail polish",      "ovenmitt"    ~ "Oven mitt",
+           "phonecase"   ~ "Phone case",       "PictFrame"   ~ "Picture frame",
+           "PiggyBank"   ~ "Piggy bank",       "pillbottle"  ~ "Pill bottle",
+           "pingpongbal" ~ "Ping pong ball",   "pocketnbook" ~ "Pocket notebook",
+           "PopStick"    ~ "Popsicle stick",   "Puck"        ~ "Hockey puck",
+           "Qtip"        ~ "Q-tip",            "RubDuck"     ~ "Rubber duck",
+           "rubikscube"  ~ "Rubik's cube",     "Scissor"     ~ "Scissors",
+           "sippycup"    ~ "Sippy cup",        "SoloCup"     ~ "Solo cup",
+           "SPshaker"    ~ "Salt and pepper shaker",
+           "spoonwooden" ~ "Wooden spoon",     "spraybottle" ~ "Spray bottle",
+           "stickynotes" ~ "Sticky notes",     "teddybear"   ~ "Teddy bear",
+           "tennisball"  ~ "Tennis ball",      "Toytop"      ~ "Toy top",
+           "WaterBottle" ~ "Water bottle",     "WoodHouse"   ~ "Birdhouse",
+           "ziptie"      ~ "Zip tie",
+           .default = object),
+         object = str_to_sentence(object)) |>
+  arrange(object)
+
+vec_scale   <- 0.9 * max(abs(scores[, 1:3])) / max(abs(rot[, 1:3]))
+loadings_df <- tibble(item = rownames(rot),
+                      PC1 = rot[, 1] * vec_scale,
+                      PC2 = rot[, 2] * vec_scale,
+                      PC3 = rot[, 3] * vec_scale)
+
+n_subj <- n_distinct(ratings$subnr)
+n_obs  <- nrow(distinct(ratings, subnr, object))
+n_obj  <- nrow(obj_means)
+```
+
+# Story summary
+
+Objects have been widely used in vision and memory research without careful consideration of individual differences in how people may be familiar with them or interact with them. Invitation for hands-on interaction may change how we think about objects. We asked `r n_subj` to rate `r n_obj` objects on six questions (see table below). While these questions seem to investigate a variety of different properties related to objects, they seem to tap into something similar at the root. Objects that are handled more often are seen more often. Certain objects invite thoughts about action more than other objects, and how something feels is unique and unrelated to thoughts about action. Importantly, familiarity with objects does not change how you think about them. 
+
+These questions seem like they tap into something underlying about opportunities for action, familiarity, and sensorimotor properties so we investigated whether responses clustered into these dimensions. Mapping each object's average ratings shows that three dimensions describe about 90% of the differences in ratings between objects. The largest, about half on its own, is how strongly an object calls for action, separating tools from ornaments and natural objects. How often an object is seen or handled and how it feels form two smaller, separate dimensions. These dimensions have implications for how we think about objects in vision and memory research.
+
+
+```{r}
+tibble(Item = names(item_text), Wording = item_text) |>
+  knitr::kable()
+```
+
+Response scales: 
+Often and Interact were rated on 7-point frequency scales (1 = Never to 7 = Everyday). Precise, Think, Action, and Feeling were rated on 7-point agree–disagree scales (1 = Strongly disagree to 7 = Strongly agree).
+
+
+# Version A: Scientific article
+
+## Introduction
+
+Objects differ in how strongly they invite manual action. A pair of scissors calls for specific, practiced grip and movement while a photo frame calls for little beyond being picked up and moved on occasion. This property, known as actability, or action affordance, is widely neglected during consideration of stimuli in research on object perception, attention, and memory. This may be one reason real objects differ from their images. Real objects capture attention (Gomez et al., 2018) and are remembered (Snow et al., 2014) better than images of the same objects, differences that may be driven by the actions that real objects afford (Snow & Culham, 2021). Put simply, you cannot pound a nail with a picture of a hammer. 
+
+Since this property cannot be observed directly, we can estimate it from ratings. These properties can then inform how stimuli are selected for future studies on vision and memory. Here we examine six rating items, each written to target a different property of everyday object interaction, collected for 121 everyday objects as objects with a lifetime of learnt affordances. We first describe the correlations among the items across individual responses. We then use principal components analysis of object-level means to identify the dimensions along which the objects vary.
+
+## Method and Analysis
+
+Participants (N = `r n_subj`) rated objects (`r n_obj`) on six rating items; see above, by completing a Qualtrics survey. Participants were recruited through Prolific and were limited to people living in Canada at the time of completion. After a brief demographics survey, participants read instructions on what each of the questions mean and how to think about them. Four example objects and expected responses were provided for self calibration. 
+
+For each object, participants indicated whether they recognized it and answered the six items. Ratings were discarded for objects a participant did not recognize. This left 1,311 participant × object observations, a mean of 62.4 objects per participant and 10.8 raters per object.
+
+Analyses were conducted in R 4.4.2 using dplyr, ggplot2, ggrepel, and plotly. Agree–disagree responses were coded 1–7. Each item was z-scored within participant across all objects that participant rated, which removes individual differences in scale use. Pairwise associations among items were quantified with Pearson correlations across all 1,311 observations. To characterize the objects themselves, z-scores were averaged across raters to give each object a six-item profile. The 121 profiles were submitted to a principal components analysis on the correlation matrix, with items standardized across objects.
+
+## Results
+
+We first asked whether the six items capture distinct aspects of object interaction or overlap substantially. @fig-a-corr plots each pair of items across all participant × object observations with their correlations. 
+
+::: {#fig-a-corr}
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6.5
+
+lower_pairs <- pair_data |> filter(as.numeric(question_x) < as.numeric(question_y))
+lower_r     <- r_values  |> filter(as.numeric(question_x) < as.numeric(question_y))
+
+ggplot(lower_pairs, aes(x = z_x, y = z_y)) +
+  geom_point(alpha = 0.12, size = 0.4, colour = "grey30") +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
+              colour = "black", linewidth = 0.6) +
+  geom_text(data = lower_r, aes(x = -Inf, y = Inf, label = sprintf("r = %.2f", r)),
+            hjust = -0.1, vjust = 1.4, size = 3) +
+  facet_grid(question_y ~ question_x) +
+  labs(x = "Rating (within-participant z-score)",
+       y = "Rating (within-participant z-score)") +
+  theme_classic(base_size = 10) +
+  theme(strip.background = element_blank())
+```
+
+Scatterplot matrix of the six object-interaction ratings. Each panel plots one pair of items across all participant × object observations (*n* = `r n_obs` observations from `r n_subj` participants, within-participant z-scores), with an ordinary least-squares line and descriptive Pearson *r*.
+
+:::
+
+Correlations among the items were all positive but ranged widely in strength (0.03 to 0.84; @fig-a-corr), and they fell into three groups. The two familiarity items were strongly related (Often–Interact, *r* = 0.84). The three items concerning action opportunities formed a moderately correlated cluster (Precise–Think, *r* = 0.41; Precise–Action, *r* = 0.47; Think–Action, *r* = 0.61) which was was only weakly related to the familiarity items (*r* = 0.10 to 0.37). Feeling was weakly related to every other item (*r* = 0.03 to 0.28) and may be a sensorimotor property independently.
+
+The items therefore appear to span fewer than six dimensions, but pairwise correlations cannot show how many, or where particular objects fall. We therefore averaged each object's z-scores across raters, which also removes much of the response-level noise in @fig-a-corr. We then submitted the 121 object profiles to a principal components analysis (PCA).
+
+::: {#fig-a-pca}
+
+```{r}
+#| fig-width: 7
+#| fig-height: 6.5
+
+flatten <- function(d) {
+  mutate(d,
+         page_x = PC1 + 0.5 * PC2,
+         page_y = PC3 + 0.5 * PC2)
+}
+
+m <- max(abs(scores[, 1:3]))   
+
+floor <- tibble(PC1 = c(-m, m, m, -m), PC2 = c(-m, -m, m, m), PC3 = -m) |> flatten()
+edge  <- tibble(PC1 = -m, PC2 = -m, PC3 = c(-m, m)) |> flatten()
+
+# axis labels placed just outside the box (angle 90 = vertical text)
+axis_labels <- tibble(label = pc_labels,
+                      PC1 = c(0, 1.3 * m, -1.1 * m),
+                      PC2 = c(-m, 0, -m),
+                      PC3 = c(-1.2 * m, -m, 0),
+                      angle = c(0, 0, 90)) |>
+  flatten()
+
+points <- scores_df |>
+  flatten() |>
+  mutate(floor_y = page_y - (PC3 + m))
+
+arrows <- loadings_df |> flatten()
+
+n_label <- 12
+labelled <- points |> slice_max(PC1^2 + PC2^2 + PC3^2, n = n_label)
+
+ggplot() +
+  geom_polygon(data = floor, aes(page_x, page_y), fill = "grey96", colour = "grey60") +
+  geom_path(data = edge, aes(page_x, page_y), colour = "grey60") +
+  geom_segment(data = points, aes(x = page_x, y = page_y, xend = page_x, yend = floor_y),
+               colour = "grey80", linewidth = 0.3) +
+  geom_point(data = points, aes(page_x, page_y),
+             shape = 21, fill = "grey75", colour = "grey25", size = 1.8) +
+  geom_text_repel(data = labelled, aes(page_x, page_y, label = object),
+                  size = 3, colour = "grey30", seed = 1) +
+  geom_segment(data = arrows, aes(x = 0, y = 0, xend = page_x, yend = page_y),
+               arrow = arrow(length = unit(2, "mm")), linewidth = 0.6) +
+  geom_text(data = arrows, aes(page_x * 1.12, page_y * 1.12, label = item),
+            fontface = "bold", size = 3.5) +
+  geom_text(data = axis_labels, aes(page_x, page_y, label = label, angle = angle), size = 3.5) +
+  coord_equal() +
+  theme_void()
+```
+
+Objects positioned on the first three principal components of their mean within-participant z-scores; axis labels give the percentage of variance each component explains. Grey lines drop each object to the floor of the box to show its height on PC3. Arrows show item coefficients, scaled for visibility. The 12 objects farthest from the centroid are labelled.
+:::
+
+## Discussion
+
+Six items written to capture distinct properties of object interaction reduced to approximately three dimensions. The dominant dimension, action relevance/associations, accounts for about half of the variance between objects. Two smaller dimensions reflect familiarity and sensorimotor properties.
+
+The secondary dimensions matter because objects matched on the dominant one can still differ substantially on them. A mug and a towel, for example, have nearly identical scores on PC1 and PC2 but differ by 3.5 SDs on PC3. Studies that select or match objects on their action properties should therefore consider all three dimensions rather than a single manipulability score. At the same time, Often and Interact (*r* = 0.84) are close enough to redundant that one could replace the other. Action-relevant properties and familiarity may be essential mediators in vision and action research. These properties may be implicated in driving the real object memory advantage.
+
+# Version B: Accessible / dynamic outlet
+
+Have you ever picked up a drill and felt the urge to pull the trigger twice? Have you ever seen a teddy bear and felt the instant need to pet it? But if you pick up a photo frame, there isn't much to do but move it. We recognize tens of thousands of objects every day, we handle hundreds and we must remember a fair share of those we handle. We don't think about all these objects in the same way, some feel good, some require careful hand movements, some are versatile while others just have good aesthetics.  
+
+Scientists who study how we see and remember objects care about these differences, particularly because the brain cares about certain objects more than others and demonstrates this by remembering them differently and activating differently when people see them. To better understand these differences we asked 21 people about 121 everyday objects. From photo frames to teddy bears, we asked six questions about how objects may differ to the average person: how often they see an object, how often they handle it, if it needs precision to act with, if it brings action to mind, if it has a specific use, and if how it feels matters for what it is. From these six questions, we found three unique dimensions that characterize objects. We show how the extent of underlying trends and patterns can be pulled out from data that otherwise seems independent.
+
+## Three families arise
+
+The chart below compares every pair of questions. Each square shows how closely people's answers to two questions moved together across the objects they rated, from 0 (no connection) to 1 (perfectly together). The darker the square, the stronger the link. 
+
+
+```{r}
+#| fig-cap: "How closely answers to each pair of questions moved together (correlation: 0 = no link, 1 = perfectly together). Based on 1,311 ratings from 21 people."
+#| fig-width: 7
+#| fig-height: 5.5
+
+r_lower <- r_values |> filter(as.numeric(question_x) < as.numeric(question_y))
+
+ggplot(r_lower, aes(x = question_x, y = question_y, fill = r)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 4) +
+  scale_fill_gradient(low = "white", high = "#4393c3", limits = c(0, 1)) +
+  scale_x_discrete(labels = plain_labels) +
+  scale_y_discrete(limits = rev, labels = plain_labels) +   # first question at the top
+  coord_fixed() +
+  labs(title = "Seeing an object and handling again move together, a light 
+       cluster for action forms, but distinctive feel is alone",
+       x = NULL, y = NULL, fill = "How strongly\nlinked") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank())
+```
+
+Three groups stand out. "Seen often" and "Handled often" move closely together, if you see something a lot, you very likely handle it a lot too. The three questions about using an object for a job ("Needs precision," "Brings use to mind" and "Has a specific use") form a looser family. "Distinctive feel" weakly connects to everything else.
+
+So the six questions seem to be measuring three underlying things. But what are these things and do the families that seem to exist actually exist?
+
+
+## What separates a toothbrush from a trophy?
+
+To find out, we turned from the questions to the objects. We averaged each object's ratings across the people who rated it. Then we used a technique called principal component analysis to find the few dimensions that matter along which objects differ most. This would be like finding how sounds from many speakers sort into treble, middle, and bass. Three directions capture about 90% of the differences, so all 121 objects fit in a single three-dimensional space.
+
+The first axis, action opportunities, explains about half of the differences on its own. On one end of its scale, it has objects with no particular job and it has objects that call for a specific, skilled use on the other. Most everyday objects have a clear job, so most dots bunch toward the purposeful end, with ornaments and bits of nature trailing off the other way.
+
+The second axis, familiarity, explains about a quarter. It separates things we handle every day (toothbrushes and utensils) from things we interact with less often (chalk, a Rubik's cube, yarn). The third axis, distinctive feeling, explains about a tenth and picks out objects with a distinctive feel. Very interestingly, distinctive feeling doesn't lump in with action opportunities.
+
+Try this: type object names and see if the relationships between action opportunities, familiarity, and feeling make sense. Find where the towel and teddy bear are. Notice how they are both close in feeling but vary largely in how often they are seen/interacted with? 
+
+Then try looking at the differences between a toothbrush and a trophy. Aren't they in completely different worlds?
+
+
+```{r}
+#| fig-cap: "Each dot is one of 121 everyday objects, placed according to its average ratings. Labelled red lines show the six questions that cluster in three families. Drag to rotate, scroll to zoom, and hover over a dot to see which object it is."
+
+plt <- plot_ly()
+for (i in 1:nrow(loadings_df)) {
+  plt <- plt |>
+    add_trace(x = c(0, loadings_df$PC1[i]),
+              y = c(0, loadings_df$PC2[i]),
+              z = c(0, loadings_df$PC3[i]),
+              type = "scatter3d", mode = "lines",
+              line = list(color = "#b2182b", width = 4),
+              hoverinfo = "skip")
+}
+
+plt <- plt |>
+  add_trace(data = loadings_df, x = ~PC1 * 1.12, y = ~PC2 * 1.12, z = ~PC3 * 1.12,
+            type = "scatter3d", mode = "text",
+            text = ~plain_labels[item], textfont = list(color = "#b2182b", size = 13),
+            hoverinfo = "skip")
+
+objects_key <- highlight_key(scores_df, ~object, group = "Find an object")
+
+plt |>
+  add_trace(data = objects_key, x = ~PC1, y = ~PC2, z = ~PC3,
+            type = "scatter3d", mode = "markers",
+            text = ~object, hoverinfo = "text",
+            marker = list(size = 4, color = "#3b5b8c", opacity = 0.75)) |>
+  layout(showlegend = FALSE,
+         scene = list(xaxis = list(title = "Action opportunities"),
+                      yaxis = list(title = "Familiarity"),
+                      zaxis = list(title = "Distinctive feel"),
+                      # starting view: from the front-left, slightly above
+                      camera = list(eye = list(x = 1.2, y = -1.8, z = 0.9)), 
+                      dragmode = "orbit"))|>
+
+  highlight(on = "plotly_click", off = "plotly_doubleclick",
+            selectize = TRUE, persistent = TRUE, color = "#e66101",
+            selected = attrs_selected(mode = "markers+text", textposition = "top center",
+                                      marker = list(size = 7))) |>
+  config(scrollZoom = FALSE)
+```
+
+So what do these six questions tell us? About half of what separates one object from another comes down to the action opportunities an object has: toothbrushes, pencils and scissors at one end; feathers, trophies and pinecones at the other. How often we handle something, and how it feels, add two smaller, separate pieces. A plate and a jump rope are equally purposeful and feel equally ordinary, but you handle one every day. A teddy bear and a towel match on how they feel, but only the towel stands out for its familiarity.
+
+For researchers, this gives us valuable insight in how to choose our stimuli when studying vision and memory for objects. A few different dimensions are important to take into account and the dimensions that might intuitively pop at us may not match what data actually shows. Using a teddy bear versus a towel may activate different brain areas purely because one is more familiar than the other. Matching objects on action opportunities alone or familiarity alone may not provide the richness required to understand complex effects. 
+
+# Data and source note
+
+This dataset was collected by Sanjivan Loganathan in the Culham Lab at Western University (London, Ontario) through an online Qualtrics survey in June 2026. Participants were recruited through Prolific.
+
+Sample:
+`r n_subj` participants each rated a subset of `r n_obj` everyday objects (four attention-check objects excluded). Everyday objects spanned kitchen utensils, personal-care items, stationery, toys and games, sports equipment, and decorative and natural objects. For each object, participants indicated whether they recognized it and rated it on six items.
+
+
+**Transformations.**
+
+- A participant's ratings of an object were dropped if they reported not recognizing it.
+- Each rating was z-scored within participant, across all objects that participant rated, removing individual differences in scale use.
+- Attention-check objects were excluded from all analyses.
+- After both exclusions, 1,311 participant × object observations remained, resulting in a mean of 62.4 objects per participant and 10.8 raters per object.
+- The correlation graphs show Pearson correlations computed across the pooled participant × object observations.
+- The PCA graphs use each object's mean z-score across raters. The PCA was run on the correlation matrix of these 121 object profiles, so each item was standardized across objects.
+
+**Limitations.**
+The sample is small (21 raters, about 11 per object), so object means and their positions in the PCA are noisy. Observations in the correlation graphs are nested within participants and objects, so those correlations are descriptive. Often and Interact were the only items on a frequency scale, so part of their separation from the other items may reflect response format rather than content. The third component largely reproduces a single item (Feeling) and should not be over-interpreted.
